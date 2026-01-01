@@ -8,8 +8,8 @@ const graphqlWithAuth = graphql.defaults({
 
 async function getProjectData() {
   const query = `
-    query($owner: String!, $repo: String!, $projectNumber: Int!) {
-      repository(owner: $owner, name: $repo) {
+    query($owner: String!, $projectNumber: Int!) {
+      user(login: $owner) {
         projectV2(number: $projectNumber) {
           id
           fields(first: 20) {
@@ -88,7 +88,7 @@ async function getProjectData() {
   const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
   const projectNumber = parseInt(process.env.PROJECT_NUMBER);
 
-  return await graphqlWithAuth(query, { owner, repo, projectNumber });
+  return await graphqlWithAuth(query, { owner, projectNumber });
 }
 
 async function getSubItemsData(subItemNumbers, owner, repo, projectId) {
@@ -176,7 +176,7 @@ function getFieldValue(fieldValues, fieldName) {
 async function calculateCompletion() {
   console.log('Fetching project data...');
   const data = await getProjectData();
-  const project = data.repository.projectV2;
+  const project = data.user.projectV2;
   
   console.log(`Project ID: ${project.id}`);
   
@@ -238,27 +238,26 @@ async function calculateCompletion() {
     // Update the Completion field
     await updateCompletionField(project.id, item.id, completionField.id, completionPercent);
     console.log(`✓ Updated completion to ${completionPercent}%`);
-   // Trigger Power Automate when completion is updated
+    
+    // Trigger Power Automate when completion is updated
     try {
-  const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
-  await fetch('YOUR_POWER_AUTOMATE_URL_HEREhttps://default5189c9b58f004a4599f4ca88b51282.bf.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/c3b8f461303748a99bea551d3834acf4/triggers/manual/paths/invoke?api-version=1',
-     {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      issueNumber: item.content.number,
-      issueTitle: item.content.title,
-      completion: completionPercent,
-      repository: `${owner}/${repo}`
-    })
-  });
-  console.log('✓ Triggered Power Automate flow');
-} catch (error) {
-  console.log('⚠ Power Automate trigger failed:', error.message);
-}
-
+      const [owner, repo] = process.env.GITHUB_REPOSITORY.split('/');
+      await fetch('https://default5189c9b58f004a4599f4ca88b51282.bf.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/c3b8f461303748a99bea551d3834acf4/triggers/manual/paths/invoke?api-version=1', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          issueNumber: item.content.number,
+          issueTitle: item.content.title,
+          completion: completionPercent,
+          repository: `${owner}/${repo}`
+        })
+      });
+      console.log('✓ Triggered Power Automate flow');
+    } catch (error) {
+      console.log('⚠ Power Automate trigger failed:', error.message);
+    }
   }
   
   console.log('\n✓ All User Stories updated!');

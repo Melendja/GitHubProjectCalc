@@ -26,5 +26,5 @@ jobs:
       - name: Calculate and Update Completion
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PROJECT_NUMBER: 1  # Update this with your project number
+          PROJECT_NUMBER: 2  # Your user-level project number
         run: node .github/scripts/calculate-completion.js
