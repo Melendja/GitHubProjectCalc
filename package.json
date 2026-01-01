@@ -1,0 +1,19 @@
+{
+  "name": "scrum-demo-2025",
+  "version": "1.0.0",
+  "description": "Automated User Story completion tracking for GitHub Projects",
+  "scripts": {
+    "calculate": "node .github/scripts/calculate-completion.js"
+  },
+  "dependencies": {
+    "@octokit/graphql": "^7.0.2"
+  },
+  "keywords": [
+    "github",
+    "projects",
+    "scrum",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT"
+}

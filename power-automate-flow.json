@@ -1,0 +1,190 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {},
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "GitHub-UserStory-Completion-Monitor",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "manual": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "issueNumber": {
+                      "type": "integer"
+                    },
+                    "issueTitle": {
+                      "type": "string"
+                    },
+                    "completion": {
+                      "type": "number"
+                    },
+                    "repository": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actions": {
+            "Check_Completion_Percentage": {
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "equals": [
+                      "@triggerBody()?['completion']",
+                      100
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Send_Teams_Notification": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['teams']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v1.0/teams/@{encodeURIComponent('YOUR_TEAM_ID')}/channels/@{encodeURIComponent('YOUR_CHANNEL_ID')}/messages",
+                    "body": {
+                      "body": {
+                        "content": "<p>🎉 <strong>User Story Completed!</strong></p><p><strong>Title:</strong> @{triggerBody()?['issueTitle']}</p><p><strong>Issue #:</strong> @{triggerBody()?['issueNumber']}</p><p><strong>Completion:</strong> @{triggerBody()?['completion']}%</p><p><a href=\"https://github.com/@{triggerBody()?['repository']}/issues/@{triggerBody()?['issueNumber']}\">View Issue</a></p>"
+                      }
+                    }
+                  },
+                  "runAfter": {}
+                },
+                "Send_Email_Notification": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['office365']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v2/Mail",
+                    "body": {
+                      "To": "YOUR_EMAIL@example.com",
+                      "Subject": "User Story Completed: @{triggerBody()?['issueTitle']}",
+                      "Body": "<p>The following User Story has been completed:</p><p><strong>Title:</strong> @{triggerBody()?['issueTitle']}<br><strong>Issue Number:</strong> #@{triggerBody()?['issueNumber']}<br><strong>Completion:</strong> @{triggerBody()?['completion']}%</p><p><a href=\"https://github.com/@{triggerBody()?['repository']}/issues/@{triggerBody()?['issueNumber']}\">View in GitHub</a></p>",
+                      "Importance": "Normal"
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Teams_Notification": [
+                      "Succeeded",
+                      "Failed",
+                      "Skipped"
+                    ]
+                  }
+                },
+                "Update_External_System": {
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "https://YOUR_EXTERNAL_API.com/api/stories/complete",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "issueNumber": "@{triggerBody()?['issueNumber']}",
+                      "title": "@{triggerBody()?['issueTitle']}",
+                      "completion": "@{triggerBody()?['completion']}",
+                      "completedDate": "@{utcNow()}"
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Email_Notification": [
+                      "Succeeded",
+                      "Failed",
+                      "Skipped"
+                    ]
+                  }
+                }
+              },
+              "runAfter": {}
+            },
+            "Check_Partial_Completion": {
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "greaterOrEquals": [
+                      "@triggerBody()?['completion']",
+                      50
+                    ]
+                  },
+                  {
+                    "less": [
+                      "@triggerBody()?['completion']",
+                      100
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Send_Progress_Update": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['teams']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v1.0/teams/@{encodeURIComponent('YOUR_TEAM_ID')}/channels/@{encodeURIComponent('YOUR_CHANNEL_ID')}/messages",
+                    "body": {
+                      "body": {
+                        "content": "<p>📊 <strong>User Story Progress Update</strong></p><p><strong>Title:</strong> @{triggerBody()?['issueTitle']}</p><p><strong>Issue #:</strong> @{triggerBody()?['issueNumber']}</p><p><strong>Completion:</strong> @{triggerBody()?['completion']}%</p>"
+                      }
+                    }
+                  },
+                  "runAfter": {}
+                }
+              },
+              "runAfter": {
+                "Check_Completion_Percentage": [
+                  "Succeeded",
+                  "Failed",
+                  "Skipped"
+                ]
+              }
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "teams": {
+                "connectionId": "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/teams",
+                "connectionName": "teams",
+                "id": "/subscriptions/{subscription-id}/providers/Microsoft.Web/locations/{location}/managedApis/teams"
+              },
+              "office365": {
+                "connectionId": "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/office365",
+                "connectionName": "office365",
+                "id": "/subscriptions/{subscription-id}/providers/Microsoft.Web/locations/{location}/managedApis/office365"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
