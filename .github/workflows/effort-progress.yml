@@ -1,9 +1,22 @@
 name: Update Effort-Weighted Progress
 
 on:
+  # Manual trigger - run this to update ALL parent issues in the project
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Specific issue number to update (leave empty to update all)'
+        required: false
+        type: string
+  
+  # Scheduled - runs every hour to keep everything updated
+  schedule:
+    - cron: '0 * * * *'  # Every hour at minute 0
+  
+  # Also trigger when issues in THIS repository change
+  # (useful if you keep some issues here)
   issues:
     types: [closed, reopened, edited]
-  workflow_dispatch:
 
 jobs:
   update-progress:
@@ -29,7 +42,7 @@ jobs:
       - name: Calculate and update progress
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          REPOSITORY: ${{ github.repository }}
-          PROJECT_ID: "PVT_kwDOBpkM5M4Ajp6V"  # Replace with your project ID
+          PROJECT_ID: PVT_kwDOBpkM5M4Ajp6V  # Replace with your actual project ID
+          ISSUE_NUMBER: ${{ github.event.inputs.issue_number || github.event.issue.number || '' }}
+          UPDATE_ALL: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number == '') }}
         run: node .github/scripts/update-effort-progress.js
