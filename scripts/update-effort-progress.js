@@ -2,7 +2,7 @@ const { graphql } = require('@octokit/graphql');
 
 // Configuration - UPDATE THESE VALUES
 const CONFIG = {
-  projectId: process.env.PROJECT_ID, // Your project node ID
+  projectId: process.env.PROJECT_ID,
   effortFieldName: 'Effort',         // Name of your effort custom field
   progressFieldName: 'Completion %'  // Name of your progress custom field
 };
@@ -10,53 +10,18 @@ const CONFIG = {
 const graphqlWithAuth = graphql.defaults({
   headers: {
     authorization: `token ${process.env.GITHUB_TOKEN}`,
+    'GraphQL-Features': 'sub_issues'
   },
 });
 
-async function getIssueDetails(owner, repo, issueNumber) {
-  const query = `
-    query($owner: String!, $repo: String!, $issueNumber: Int!) {
-      repository(owner: $owner, name: $repo) {
-        issue(number: $issueNumber) {
-          id
-          number
-          title
-          state
-          parent {
-            id
-            number
-          }
-          subIssues(first: 100) {
-            nodes {
-              id
-              number
-              state
-              stateReason
-            }
-          }
-        }
-      }
-    }
-  `;
-
-  const result = await graphqlWithAuth(query, {
-    owner,
-    repo,
-    issueNumber: parseInt(issueNumber),
-    headers: {
-      'GraphQL-Features': 'sub_issues'
-    }
-  });
-
-  return result.repository.issue;
-}
-
 async function getProjectFields(projectId) {
+  console.log('📋 Fetching project fields...');
   const query = `
     query($projectId: ID!) {
       node(id: $projectId) {
         ... on ProjectV2 {
           id
+          title
           fields(first: 50) {
             nodes {
               ... on ProjectV2Field {
@@ -77,20 +42,44 @@ async function getProjectFields(projectId) {
   `;
 
   const result = await graphqlWithAuth(query, { projectId });
+  console.log(`✅ Found project: ${result.node.title}`);
   return result.node.fields.nodes;
 }
 
-async function getProjectItem(projectId, issueId) {
+async function getAllProjectItems(projectId) {
+  console.log('🔍 Fetching all project items...');
   const query = `
-    query($projectId: ID!, $issueId: ID!) {
+    query($projectId: ID!, $cursor: String) {
       node(id: $projectId) {
         ... on ProjectV2 {
-          items(first: 100) {
+          items(first: 100, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               id
               content {
                 ... on Issue {
                   id
+                  number
+                  title
+                  state
+                  stateReason
+                  repository {
+                    owner {
+                      login
+                    }
+                    name
+                  }
+                  subIssues(first: 100) {
+                    nodes {
+                      id
+                      number
+                      state
+                      stateReason
+                    }
+                  }
                 }
               }
               fieldValues(first: 50) {
@@ -104,15 +93,6 @@ async function getProjectItem(projectId, issueId) {
                     }
                     number
                   }
-                  ... on ProjectV2ItemFieldTextValue {
-                    field {
-                      ... on ProjectV2Field {
-                        id
-                        name
-                      }
-                    }
-                    text
-                  }
                 }
               }
             }
@@ -122,39 +102,63 @@ async function getProjectItem(projectId, issueId) {
     }
   `;
 
-  const result = await graphqlWithAuth(query, { projectId, issueId });
-  const items = result.node.items.nodes;
-  
-  // Find the item that matches our issue
-  const item = items.find(item => item.content && item.content.id === issueId);
-  return item;
-}
+  let allItems = [];
+  let hasNextPage = true;
+  let cursor = null;
 
-async function getEffortForIssue(projectId, issueId, effortFieldName) {
-  const item = await getProjectItem(projectId, issueId);
-  
-  if (!item) {
-    console.log(`Issue ${issueId} not found in project`);
-    return 0;
+  while (hasNextPage) {
+    const result = await graphqlWithAuth(query, { projectId, cursor });
+    const items = result.node.items;
+    
+    allItems = allItems.concat(items.nodes);
+    hasNextPage = items.pageInfo.hasNextPage;
+    cursor = items.pageInfo.endCursor;
   }
 
-  // Find the Effort field value
+  console.log(`✅ Found ${allItems.length} items in project`);
+  return allItems;
+}
+
+async function getIssueWithSubIssues(issueId) {
+  console.log(`📝 Fetching issue details for ${issueId}...`);
+  const query = `
+    query($issueId: ID!) {
+      node(id: $issueId) {
+        ... on Issue {
+          id
+          number
+          title
+          repository {
+            owner {
+              login
+            }
+            name
+          }
+          subIssues(first: 100) {
+            nodes {
+              id
+              number
+              state
+              stateReason
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const result = await graphqlWithAuth(query, { issueId });
+  return result.node;
+}
+
+function getEffortFromItem(item, effortFieldName) {
   const effortValue = item.fieldValues.nodes.find(
     fv => fv.field && fv.field.name === effortFieldName
   );
-
   return effortValue ? (effortValue.number || 0) : 0;
 }
 
-async function updateProgressField(projectId, parentIssueId, progressFieldId, value) {
-  // First, get the project item ID for the parent issue
-  const item = await getProjectItem(projectId, parentIssueId);
-  
-  if (!item) {
-    console.log(`Parent issue not found in project`);
-    return;
-  }
-
+async function updateProgressField(projectId, projectItemId, progressFieldId, value) {
   const mutation = `
     mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) {
       updateProjectV2ItemFieldValue(
@@ -176,61 +180,39 @@ async function updateProgressField(projectId, parentIssueId, progressFieldId, va
 
   await graphqlWithAuth(mutation, {
     projectId,
-    itemId: item.id,
+    itemId: projectItemId,
     fieldId: progressFieldId,
-    value: Math.round(value * 100) / 100 // Round to 2 decimal places
+    value: Math.round(value * 100) / 100
   });
 }
 
-async function calculateEffortWeightedProgress(owner, repo, issueNumber, projectId) {
-  console.log(`Processing issue #${issueNumber}...`);
-
-  // Get issue details
-  const issue = await getIssueDetails(owner, repo, issueNumber);
-  console.log(`Issue state: ${issue.state}`);
-
-  // Determine which issue to update (if this is a sub-issue, update parent)
-  let targetIssue = issue;
-  if (issue.parent) {
-    console.log(`This is a sub-issue of #${issue.parent.number}`);
-    targetIssue = await getIssueDetails(owner, repo, issue.parent.number);
-  }
-
+async function calculateProgressForIssue(projectId, issue, projectItems, effortFieldName, progressFieldId) {
   // Check if this issue has sub-issues
-  if (!targetIssue.subIssues || targetIssue.subIssues.nodes.length === 0) {
-    console.log(`Issue #${targetIssue.number} has no sub-issues, skipping...`);
-    return;
+  if (!issue.subIssues || issue.subIssues.nodes.length === 0) {
+    return null;
   }
 
-  console.log(`Found ${targetIssue.subIssues.nodes.length} sub-issues`);
+  const repoName = `${issue.repository.owner.login}/${issue.repository.name}`;
+  console.log(`\n${'='.repeat(70)}`);
+  console.log(`📊 Processing: #${issue.number} - ${issue.title}`);
+  console.log(`   Repository: ${repoName}`);
+  console.log(`   Sub-issues: ${issue.subIssues.nodes.length}`);
+  console.log(`${'='.repeat(70)}`);
 
-  // Get project fields
-  const fields = await getProjectFields(projectId);
-  const effortField = fields.find(f => f.name === CONFIG.effortFieldName);
-  const progressField = fields.find(f => f.name === CONFIG.progressFieldName);
-
-  if (!effortField) {
-    console.error(`Error: Could not find field "${CONFIG.effortFieldName}" in project`);
-    return;
-  }
-
-  if (!progressField) {
-    console.error(`Error: Could not find field "${CONFIG.progressFieldName}" in project`);
-    return;
-  }
-
-  console.log(`Found Effort field: ${effortField.id}`);
-  console.log(`Found Progress field: ${progressField.id}`);
-
-  // Calculate effort-weighted progress
   let totalEffort = 0;
   let completedEffort = 0;
 
-  for (const subIssue of targetIssue.subIssues.nodes) {
-    const effort = await getEffortForIssue(projectId, subIssue.id, CONFIG.effortFieldName);
+  // Calculate effort for each sub-issue
+  for (const subIssue of issue.subIssues.nodes) {
+    // Find the sub-issue in project items to get its effort value
+    const subIssueItem = projectItems.find(
+      item => item.content && item.content.id === subIssue.id
+    );
+
+    const effort = subIssueItem ? getEffortFromItem(subIssueItem, effortFieldName) : 0;
     const isCompleted = subIssue.state === 'CLOSED' && subIssue.stateReason === 'COMPLETED';
     
-    console.log(`  Sub-issue #${subIssue.number}: Effort=${effort}, Completed=${isCompleted}`);
+    console.log(`   ├─ Sub-issue #${subIssue.number}: Effort=${effort}, Status=${subIssue.state}${isCompleted ? ' ✓' : ''}`);
     
     totalEffort += effort;
     if (isCompleted) {
@@ -243,39 +225,171 @@ async function calculateEffortWeightedProgress(owner, repo, issueNumber, project
     ? (completedEffort / totalEffort) * 100 
     : 0;
 
-  console.log(`Total Effort: ${totalEffort}`);
-  console.log(`Completed Effort: ${completedEffort}`);
-  console.log(`Completion: ${completionPercentage.toFixed(2)}%`);
+  console.log(`   ├─ Total Effort: ${totalEffort}`);
+  console.log(`   ├─ Completed Effort: ${completedEffort}`);
+  console.log(`   └─ Completion: ${completionPercentage.toFixed(2)}%`);
 
-  // Update the parent issue's progress field
+  // Find the parent issue's project item to update it
+  const parentItem = projectItems.find(
+    item => item.content && item.content.id === issue.id
+  );
+
+  if (!parentItem) {
+    console.log(`   ⚠️  Warning: Parent issue not found in project items`);
+    return null;
+  }
+
+  // Update the progress field
   await updateProgressField(
     projectId,
-    targetIssue.id,
-    progressField.id,
+    parentItem.id,
+    progressFieldId,
     completionPercentage
   );
 
-  console.log(`✅ Updated progress for issue #${targetIssue.number}`);
+  console.log(`   ✅ Updated progress to ${completionPercentage.toFixed(2)}%`);
+  
+  return {
+    issueNumber: issue.number,
+    totalEffort,
+    completedEffort,
+    completionPercentage
+  };
+}
+
+async function updateAllParentIssues(projectId) {
+  console.log('\n🚀 Starting project-wide update...\n');
+
+  // Get project fields
+  const fields = await getProjectFields(projectId);
+  const effortField = fields.find(f => f.name === CONFIG.effortFieldName);
+  const progressField = fields.find(f => f.name === CONFIG.progressFieldName);
+
+  if (!effortField) {
+    throw new Error(`Could not find field "${CONFIG.effortFieldName}" in project`);
+  }
+
+  if (!progressField) {
+    throw new Error(`Could not find field "${CONFIG.progressFieldName}" in project`);
+  }
+
+  console.log(`✅ Found Effort field: ${effortField.id}`);
+  console.log(`✅ Found Progress field: ${progressField.id}`);
+
+  // Get all project items
+  const projectItems = await getAllProjectItems(projectId);
+
+  // Filter for parent issues (issues with sub-issues)
+  const parentIssues = projectItems
+    .filter(item => 
+      item.content && 
+      item.content.subIssues && 
+      item.content.subIssues.nodes.length > 0
+    )
+    .map(item => item.content);
+
+  console.log(`\n📌 Found ${parentIssues.length} parent issues with sub-issues\n`);
+
+  if (parentIssues.length === 0) {
+    console.log('ℹ️  No parent issues found. Nothing to update.');
+    return;
+  }
+
+  // Process each parent issue
+  const results = [];
+  for (const issue of parentIssues) {
+    try {
+      const result = await calculateProgressForIssue(
+        projectId,
+        issue,
+        projectItems,
+        CONFIG.effortFieldName,
+        progressField.id
+      );
+      if (result) {
+        results.push(result);
+      }
+    } catch (error) {
+      console.error(`❌ Error processing issue #${issue.number}: ${error.message}`);
+    }
+  }
+
+  // Summary
+  console.log(`\n${'='.repeat(70)}`);
+  console.log('📈 Summary');
+  console.log(`${'='.repeat(70)}`);
+  console.log(`Total parent issues processed: ${results.length}`);
+  console.log(`${'='.repeat(70)}\n`);
+}
+
+async function updateSpecificIssue(projectId, issueNumber) {
+  console.log(`\n🎯 Updating specific issue #${issueNumber}...\n`);
+
+  // Get project fields
+  const fields = await getProjectFields(projectId);
+  const effortField = fields.find(f => f.name === CONFIG.effortFieldName);
+  const progressField = fields.find(f => f.name === CONFIG.progressFieldName);
+
+  if (!effortField || !progressField) {
+    throw new Error('Required fields not found in project');
+  }
+
+  // Get all project items (we need this to find effort values)
+  const projectItems = await getAllProjectItems(projectId);
+
+  // Find the specific issue in project items
+  const targetItem = projectItems.find(
+    item => item.content && item.content.number === parseInt(issueNumber)
+  );
+
+  if (!targetItem || !targetItem.content) {
+    throw new Error(`Issue #${issueNumber} not found in project`);
+  }
+
+  // Get full issue details with sub-issues
+  const issue = await getIssueWithSubIssues(targetItem.content.id);
+
+  // Calculate and update progress
+  await calculateProgressForIssue(
+    projectId,
+    issue,
+    projectItems,
+    CONFIG.effortFieldName,
+    progressField.id
+  );
 }
 
 // Main execution
 async function main() {
-  const [owner, repo] = process.env.REPOSITORY.split('/');
-  const issueNumber = process.env.ISSUE_NUMBER;
   const projectId = process.env.PROJECT_ID;
+  const issueNumber = process.env.ISSUE_NUMBER;
+  const updateAll = process.env.UPDATE_ALL === 'true';
 
   if (!projectId) {
-    console.error('Error: PROJECT_ID environment variable is required');
+    console.error('❌ Error: PROJECT_ID environment variable is required');
     process.exit(1);
   }
 
+  console.log('\n╔════════════════════════════════════════════════════════════════╗');
+  console.log('║     GitHub Effort-Weighted Progress Calculator                 ║');
+  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+  console.log(`Project ID: ${projectId}`);
+  console.log(`Mode: ${updateAll ? 'Update ALL issues' : issueNumber ? `Update issue #${issueNumber}` : 'Update ALL issues'}\n`);
+
   try {
-    await calculateEffortWeightedProgress(owner, repo, issueNumber, projectId);
+    if (updateAll || !issueNumber) {
+      await updateAllParentIssues(projectId);
+    } else {
+      await updateSpecificIssue(projectId, issueNumber);
+    }
+    
+    console.log('\n✅ Process completed successfully!\n');
   } catch (error) {
-    console.error('Error:', error.message);
+    console.error('\n❌ Error:', error.message);
     if (error.errors) {
       console.error('GraphQL errors:', JSON.stringify(error.errors, null, 2));
     }
+    console.error('\n');
     process.exit(1);
   }
 }
