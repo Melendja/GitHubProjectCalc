@@ -1,0 +1,35 @@
+name: Update Effort-Weighted Progress
+
+on:
+  issues:
+    types: [closed, reopened, edited]
+  workflow_dispatch:
+
+jobs:
+  update-progress:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm init -y
+          npm install @octokit/graphql
+
+      - name: Calculate and update progress
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          PROJECT_ID: "PVT_kwDOBpkM5M4Ajp6V"  # Replace with your project ID
+        run: node .github/scripts/update-effort-progress.js
